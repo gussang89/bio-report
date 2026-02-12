@@ -1,20 +1,18 @@
 import streamlit as st
 import pandas as pd
 import requests
-from openai import OpenAI
+import google.generativeai as genai  # OpenAI 대신 구글 라이브러리 사용
 from datetime import datetime, timedelta
 
-# --- 1. 설정 및 API 키 ---
-# 실제 운영 시에는 st.secrets를 사용하여 키를 관리하는 것이 안전합니다.
-client = OpenAI(api_key="YOUR_OPENAI_API_KEY")
+# --- 1. 구글 제미나이 설정 ---
+# Streamlit Secrets에서 키를 가져와 설정
+try:
+    genai.configure(api_key=st.secrets["GOOGLE_API_KEY"])
+except Exception as e:
+    st.error("API 키 설정이 잘못되었습니다. Secrets에 GOOGLE_API_KEY를 확인해주세요.")
 
-# --- 2. 날짜 계산 및 논문 검색 함수 ---
+# --- 2. 논문 검색 함수 (Semantic Scholar) ---
 def get_recent_papers(query, days=14):
-    """
-    최근 N일 이내의 논문을 검색하고 필터링합니다.
-    Semantic Scholar는 정확한 일자 검색이 어렵으므로, 최근 연도 데이터를 가져와서 Python으로 필터링합니다.
-    """
-    # 넉넉하게 최근 2년치 데이터를 가져옴 (API 효율성을 위해)
     current_year = datetime.now().year
     year_range = f"{current_year-1}-{current_year}"
     
@@ -32,82 +30,71 @@ def get_recent_papers(query, days=14):
             if pub_date_str:
                 try:
                     pub_date = datetime.strptime(pub_date_str, '%Y-%m-%d')
-                    # 날짜 비교: 설정한 기간(2주) 이내인지 확인
                     if pub_date >= cutoff_date:
                         filtered_papers.append(paper)
                 except ValueError:
-                    continue # 날짜 형식이 안 맞으면 패스
-                    
+                    continue
     return filtered_papers
 
-# --- 3. AI 요약 함수 (개별 요약 + 종합 리포트) ---
+# --- 3. 제미나이 요약 함수 ---
 def generate_weekly_report(papers):
-    """
-    수집된 논문들의 초록을 모아서 '주간 기술 트렌드'를 작성합니다.
-    """
     if not papers:
         return "분석할 논문이 없습니다."
 
-    # 초록들을 하나로 합침 (토큰 제한 고려하여 앞부분만 일부 발췌 가능)
     combined_abstracts = ""
-    for i, p in enumerate(papers):
+    for i, p in enumerate(papers[:20]): # 제미나이는 입력창이 커서 20개도 거뜬합니다
         combined_abstracts += f"[{i+1}] {p['title']}: {p.get('abstract', 'No abstract')} \n\n"
 
+    # 제미나이에게 보낼 프롬프트
     prompt = f"""
-    당신은 바이오 연료 공정 엔지니어링 전문가입니다. 
-    아래는 최근 2주간 발표된 바이오디젤/SAF 관련 논문들의 초록 모음입니다.
+    당신은 바이오 에너지 공정 수석 엔지니어입니다.
+    아래는 최근 발표된 바이오디젤/SAF 관련 논문들의 초록입니다.
     
-    이 내용들을 바탕으로 '주간 기술 동향 리포트'를 작성해주세요.
-    다음 세 가지 항목으로 나누어 한국어로 정리하세요:
+    이 내용들을 바탕으로 한국어로 '주간 기술 동향 리포트'를 작성해주세요.
     
-    1. **핵심 트렌드**: 이번 주 연구들이 공통적으로 주목하는 기술이나 이슈는 무엇인가? (예: 특정 촉매, 전처리 방식 등)
-    2. **주목할 만한 성과**: 수율 향상이나 비용 절감 등 구체적인 숫자가 언급된 획기적인 연구가 있다면 1~2개 꼽아주세요.
-    3. **현장 적용 가능성**: 실제 공장에 적용해볼 만한 아이디어가 있는가?
-
+    [형식]
+    1. 💡 **핵심 트렌드**: 이번 주 연구들이 공통적으로 주목하는 기술 키워드 (3줄 요약)
+    2. 🏆 **주목할 만한 성과**: 수율 향상, 비용 절감 등 구체적 수치가 있는 연구 2~3개 선정
+    3. 🏭 **현장 적용 아이디어**: 실제 공장에 적용해볼 만한 점
+    
     [논문 데이터]
     {combined_abstracts}
     """
 
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return response.choices[0].message.content
+    # Gemini 1.5 Flash 모델 사용 (빠르고 저렴함)
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    response = model.generate_content(prompt)
+    
+    return response.text
 
 # --- 4. 메인 UI ---
-st.set_page_config(page_title="Weekly Bio-Tech Report", layout="wide")
+st.set_page_config(page_title="Bio-Tech Report (Gemini)", layout="wide")
+st.title("🌿 주간 바이오 기술 리포트 (Powered by Gemini)")
 
-st.title("📅 주간 바이오 기술 트렌드 리포트")
-
-# 사이드바 설정
 st.sidebar.header("설정")
 search_query = st.sidebar.text_input("검색어", value="Biodiesel production optimization")
-days_filter = st.sidebar.slider("기간 설정 (일)", 7, 30, 14) # 기본 14일(2주)
+days_filter = st.sidebar.slider("기간 설정 (일)", 7, 30, 14)
 
 if st.sidebar.button("리포트 생성하기"):
-    with st.spinner(f'최근 {days_filter}일간의 논문을 수집하고 분석 중입니다...'):
-        # 1. 논문 수집
+    with st.spinner('Gemini가 최신 논문을 읽고 있습니다...'):
         recent_papers = get_recent_papers(search_query, days=days_filter)
         
         if not recent_papers:
-            st.error(f"최근 {days_filter}일 동안 발행된 관련 논문이 없습니다. 기간을 늘리거나 검색어를 변경해보세요.")
+            st.error(f"최근 {days_filter}일 동안 발행된 논문이 없습니다.")
         else:
-            st.success(f"총 {len(recent_papers)}건의 최신 논문을 발견했습니다!")
+            st.success(f"총 {len(recent_papers)}건의 논문 발견!")
             
-            # 2. 종합 리포트 생성 (가장 상단에 배치)
-            st.subheader("📊 AI 기술 분석 리포트")
+            # 종합 리포트
+            st.subheader("📊 Gemini 기술 분석")
             report_content = generate_weekly_report(recent_papers)
-            st.info(report_content)
+            st.markdown(report_content)
             
             st.divider()
             
-            # 3. 개별 논문 리스트
-            st.subheader("📝 개별 논문 목록")
+            # 개별 리스트
+            st.subheader("📝 논문 목록")
             for paper in recent_papers:
                 with st.expander(f"[{paper['publicationDate']}] {paper['title']}"):
                     st.write(f"**저널:** {paper.get('venue', 'N/A')}")
                     st.write(f"**링크:** {paper['url']}")
                     st.caption(paper.get('abstract', '초록 없음'))
-
-st.sidebar.markdown("---")
-st.sidebar.caption("Data source: Semantic Scholar API")
