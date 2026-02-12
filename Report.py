@@ -1,8 +1,8 @@
 import streamlit as st
-import pandas as pd
-import requests
+import urllib.request
+import urllib.parse
+import xml.etree.ElementTree as ET
 import google.generativeai as genai
-import time
 from datetime import datetime, timedelta
 
 # --- 1. 구글 제미나이 설정 ---
@@ -14,63 +14,51 @@ try:
 except Exception as e:
     st.error(f"API 키 설정 중 에러 발생: {e}")
 
-# --- 2. 논문 검색 함수 (캐싱 적용 + 에러 방지) ---
-# @st.cache_data: 이 데코레이터가 있으면 똑같은 검색어는 1시간(3600초) 동안 API를 호출하지 않고 저장된 결과를 보여줍니다.
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_recent_papers(keywords, months):
-    # API에 무리를 주지 않기 위해 잠시 대기
-    time.sleep(1)
+# --- 2. arXiv 논문 검색 함수 (차단 없는 API) ---
+def get_arxiv_papers(keywords, months):
+    # arXiv API는 'all:키워드' 형태로 검색합니다.
+    # 예: (all:biodiesel OR all:SAF)
+    query_parts = [f'all:"{k}"' for k in keywords]
+    search_query = " OR ".join(query_parts)
     
-    today = datetime.now()
-    cutoff_date = today - timedelta(days=months*30)
+    # URL 인코딩 (특수문자 처리)
+    encoded_query = urllib.parse.quote(search_query)
     
-    # 검색어 결합
-    combined_query = " | ".join(keywords)
-    
-    base_url = "https://api.semanticscholar.org/graph/v1/paper/search"
-    
-    # 검색 범위 설정
-    current_year = today.year
-    year_range = f"{current_year-1}-{current_year}"
-
-    params = {
-        "query": combined_query,
-        "year": year_range,
-        "limit": 100, 
-        "fields": "title,abstract,url,publicationDate,venue,citationCount"
-    }
+    # 최신순 정렬 (submittedDate), 30개만 가져옴
+    base_url = f"http://export.arxiv.org/api/query?search_query={encoded_query}&start=0&max_results=30&sortBy=submittedDate&sortOrder=descending"
     
     try:
-        response = requests.get(base_url, params=params)
-        
-        # 429 에러(너무 많은 요청) 처리
-        if response.status_code == 429:
-            st.error("🚦 API 요청이 너무 많아 잠시 차단되었습니다. 1~2분 뒤에 다시 시도해주세요.")
-            return []
+        with urllib.request.urlopen(base_url) as url:
+            data = url.read().decode('utf-8')
             
-        if response.status_code != 200:
-            st.error(f"논문 검색 API 오류: {response.status_code}")
-            return []
-
-        data = response.json().get('data', [])
+        # XML 파싱 (arXiv는 XML로 데이터를 줍니다)
+        root = ET.fromstring(data)
+        namespace = {'atom': 'http://www.w3.org/2005/Atom'}
         
+        cutoff_date = datetime.now() - timedelta(days=months*30)
         filtered_papers = []
-        for paper in data:
-            pub_date_str = paper.get('publicationDate')
-            if pub_date_str:
-                try:
-                    pub_date = datetime.strptime(pub_date_str, '%Y-%m-%d')
-                    if pub_date >= cutoff_date:
-                        filtered_papers.append(paper)
-                except ValueError:
-                    continue
         
-        # 최신순 정렬
-        filtered_papers.sort(key=lambda x: x['publicationDate'], reverse=True)
+        for entry in root.findall('atom:entry', namespace):
+            published_str = entry.find('atom:published', namespace).text
+            # 날짜 형식: 2024-02-12T14:00:00Z
+            published_date = datetime.strptime(published_str, "%Y-%m-%dT%H:%M:%SZ")
+            
+            if published_date >= cutoff_date:
+                title = entry.find('atom:title', namespace).text.strip().replace('\n', ' ')
+                summary = entry.find('atom:summary', namespace).text.strip().replace('\n', ' ')
+                link = entry.find('atom:id', namespace).text
+                
+                filtered_papers.append({
+                    "title": title,
+                    "abstract": summary,
+                    "url": link,
+                    "publicationDate": published_date.strftime("%Y-%m-%d")
+                })
+        
         return filtered_papers
 
     except Exception as e:
-        st.error(f"검색 중 예기치 않은 오류 발생: {e}")
+        st.error(f"arXiv 검색 중 오류 발생: {e}")
         return []
 
 # --- 3. 제미나이 리포트 작성 ---
@@ -78,26 +66,24 @@ def generate_trend_report(papers, keywords, months):
     if not papers:
         return "분석할 논문이 없습니다."
 
-    target_papers = papers[:20]
+    # 상위 15개만 분석
+    target_papers = papers[:15]
     
     combined_text = ""
     for i, p in enumerate(target_papers):
-        abstract = p.get('abstract')
-        if not abstract:
-            abstract = "초록 없음"
-        combined_text += f"[{i+1}] 날짜: {p['publicationDate']} / 제목: {p['title']} / 초록: {abstract[:200]}...\n"
+        combined_text += f"[{i+1}] 날짜: {p['publicationDate']} / 제목: {p['title']} / 초록: {p['abstract'][:300]}...\n\n"
 
     prompt = f"""
     당신은 바이오 에너지 공정 전문가입니다.
-    사용자 관심 키워드: {', '.join(keywords)}
+    사용자 키워드: {', '.join(keywords)}
     
-    아래는 최근 {months}개월간 발표된 관련 논문 리스트입니다.
-    이들을 분석하여 한국어로 '기술 트렌드 브리핑'을 작성해주세요.
+    아래는 'arXiv(아카이브)'에서 검색된 최근 {months}개월간의 논문 초록입니다.
+    이 내용을 바탕으로 한국어 '기술 동향 브리핑'을 작성해주세요.
     
     [작성 포인트]
-    1. 🔍 **검색 요약**: "총 {len(papers)}건의 최신 논문이 검색되었습니다."
-    2. 📈 **핵심 동향**: 최근 연구들이 집중하고 있는 주제 요약
-    3. ⭐ **주목할 논문 3선**: 실용적인 연구 3개를 선정하여 이유 설명.
+    1. 🔍 **검색 결과**: "arXiv에서 총 {len(papers)}건의 최신 연구가 검색되었습니다."
+    2. 💡 **핵심 요약**: 검색된 연구들의 기술적 특징 요약.
+    3. 🚀 **주요 논문 3가지**: 가장 관련성 높은 논문 3개를 뽑아 간단히 설명.
     
     [논문 데이터]
     {combined_text}
@@ -108,47 +94,42 @@ def generate_trend_report(papers, keywords, months):
     return response.text
 
 # --- 4. 메인 UI ---
-st.set_page_config(page_title="Bio-Tech Trends", layout="wide")
-st.title("🔬 최신 바이오 논문 탐색기")
-st.caption("팁: 잦은 에러가 발생하면 1~2분 정도 쉬었다가 검색하세요.")
+st.set_page_config(page_title="ArXiv Bio-Tech Report", layout="wide")
+st.title("🔬 최신 바이오 논문 탐색기 (arXiv 버전)")
+st.caption("안정적인 arXiv API를 사용하여 끊김 없이 논문을 검색합니다.")
 
 # 사이드바
 with st.sidebar:
     st.header("설정")
     
-    # 기본값
-    default_keywords = "Biodiesel production\nSustainable Aviation Fuel\nTransesterification process"
+    default_keywords = "Biodiesel\nBiofuel\nSustainable Aviation Fuel"
     
     keywords_input = st.text_area("검색어 (영어, 줄바꿈으로 구분)", value=default_keywords, height=150)
-    months = st.slider("검색 기간 (개월)", 1, 24, 6)
+    months = st.slider("검색 기간 (개월)", 1, 24, 12) # 기본 12개월 (arXiv는 데이터가 아주 많진 않으므로 길게 잡음)
     
     search_btn = st.button("검색 시작 🔍", type="primary")
 
-# 메인 화면 로직
 if search_btn:
     keywords = [k.strip() for k in keywords_input.split('\n') if k.strip()]
     
     if not keywords:
         st.warning("검색어를 입력해주세요.")
     else:
-        with st.spinner(f"최근 {months}개월간의 논문을 찾고 있습니다..."):
-            # 이제 캐싱 덕분에 중복 호출 시 API를 쓰지 않습니다!
-            papers = get_recent_papers(keywords, months)
+        with st.spinner(f"arXiv에서 최근 {months}개월간의 논문을 찾는 중..."):
+            papers = get_arxiv_papers(keywords, months)
             
             if not papers:
-                st.info("검색 결과가 없습니다. 잠시 후 다시 시도하거나 검색어를 변경해보세요.")
+                st.info("검색 결과가 없습니다. 기간을 늘리거나 검색어를 더 넓게 잡아보세요.")
             else:
-                tab1, tab2 = st.tabs(["📊 AI 요약 리포트", "📝 논문 리스트"])
+                tab1, tab2 = st.tabs(["📊 AI 분석 리포트", "📝 논문 원문 리스트"])
                 
                 with tab1:
-                    st.success(f"분석 완료! 총 {len(papers)}건의 논문을 찾았습니다.")
+                    st.success(f"성공! {len(papers)}건의 논문을 가져왔습니다.")
                     report = generate_trend_report(papers, keywords, months)
                     st.markdown(report)
                     
                 with tab2:
                     for p in papers:
                         with st.expander(f"[{p['publicationDate']}] {p['title']}"):
-                            st.write(f"**저널:** {p.get('venue', 'N/A')}")
-                            st.write(f"**인용수:** {p.get('citationCount', 0)}")
-                            st.markdown(f"[원문 보러가기]({p['url']})")
-                            st.caption(p.get('abstract', '초록 내용 없음'))
+                            st.markdown(f"**[논문 바로가기 (PDF)]({p['url']})**")
+                            st.write(p['abstract'])
