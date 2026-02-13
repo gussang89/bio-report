@@ -19,6 +19,7 @@ def configure_gemini():
 
 # --- 2. 검색 함수들 ---
 
+# [1] 해외 논문 (Europe PMC)
 def get_epmc_papers(keywords, months):
     query_parts = [f'({k.strip()})' for k in keywords if k.strip()]
     if not query_parts: return []
@@ -45,19 +46,19 @@ def get_epmc_papers(keywords, months):
         return filtered
     except: return []
 
-# [핵심 수정] 국내 뉴스 개별 검색 병합 로직
+# [2] 핵심 수정: 국내 뉴스 (네이버 뉴스 RSS 적용 - API 키 불필요)
 def get_domestic_news(keywords, months):
     news_list = []
-    # 봇 차단 방지를 위한 구체적인 User-Agent 설정
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    cutoff_date = datetime.now() - timedelta(days=months*30)
     
     for k in keywords:
         clean_k = k.strip()
         if not clean_k: continue
         
-        # 따옴표 없이 순수 검색어로 요청 (결과가 훨씬 잘 나옴)
         encoded_query = urllib.parse.quote(clean_k)
-        url = f"https://news.google.com/rss/search?q={encoded_query}+when:{months}m&hl=ko&gl=KR&ceid=KR:ko"
+        # 네이버 뉴스 검색 RSS URL
+        url = f"https://newssearch.naver.com/search.naver?where=rss&query={encoded_query}"
         
         try:
             req = urllib.request.Request(url, headers=headers)
@@ -68,28 +69,43 @@ def get_domestic_news(keywords, months):
                 title = item.find('title').text
                 link = item.find('link').text
                 pubDate = item.find('pubDate').text
-                try: date_str = parsedate_to_datetime(pubDate).strftime("%Y-%m-%d")
-                except: date_str = pubDate
-                news_list.append({"title": title, "abstract": "상세 내용은 원문 링크를 참고하세요.", "url": link, "date": date_str})
+                description = item.find('description').text
+                
+                # 날짜 파싱 및 기간 필터링
+                try: 
+                    dt = parsedate_to_datetime(pubDate)
+                    # 설정한 기간 이전의 뉴스는 버림
+                    if dt.replace(tzinfo=None) < cutoff_date.replace(tzinfo=None):
+                        continue
+                    date_str = dt.strftime("%Y-%m-%d")
+                except: 
+                    date_str = pubDate
+                
+                # 제목과 초록의 불필요한 HTML 태그 깔끔하게 제거
+                clean_title = re.sub('<[^<]+>', '', title)
+                clean_abstract = re.sub('<[^<]+>', '', description) if description else "상세 내용은 링크 참고"
+                
+                news_list.append({"title": clean_title, "abstract": clean_abstract[:300], "url": link, "date": date_str})
         except Exception as e:
-            st.warning(f"'{clean_k}' 키워드 검색 중 오류: {e}")
+            st.warning(f"'{clean_k}' 네이버 검색 중 오류: {e}")
             continue
             
-    # URL 기준으로 중복 기사 제거 후 최신순 정렬
     unique_news = {n['url']: n for n in news_list}.values()
     return sorted(unique_news, key=lambda x: x['date'], reverse=True)
 
-# [핵심 수정] 해외 뉴스 개별 검색 병합 로직
+# [3] 핵심 수정: 해외 뉴스 (구글 뉴스 버그 우회)
 def get_overseas_news(keywords, months):
     news_list = []
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    cutoff_date = datetime.now() - timedelta(days=months*30)
     
     for k in keywords:
         clean_k = k.strip()
         if not clean_k: continue
         
         encoded_query = urllib.parse.quote(clean_k)
-        url = f"https://news.google.com/rss/search?q={encoded_query}+when:{months}m&hl=en-US&gl=US&ceid=US:en"
+        # 구글 서버 버그를 일으키는 when 옵션을 빼고, 파이썬에서 날짜를 걸러냅니다.
+        url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
         
         try:
             req = urllib.request.Request(url, headers=headers)
@@ -100,11 +116,17 @@ def get_overseas_news(keywords, months):
                 title = item.find('title').text
                 link = item.find('link').text
                 pubDate = item.find('pubDate').text
-                try: date_str = parsedate_to_datetime(pubDate).strftime("%Y-%m-%d")
-                except: date_str = pubDate
-                news_list.append({"title": title, "abstract": "상세 내용은 원문 링크를 참고하세요.", "url": link, "date": date_str})
+                
+                try: 
+                    dt = parsedate_to_datetime(pubDate)
+                    if dt.replace(tzinfo=None) < cutoff_date.replace(tzinfo=None):
+                        continue
+                    date_str = dt.strftime("%Y-%m-%d")
+                except: 
+                    date_str = pubDate
+                    
+                news_list.append({"title": title, "abstract": "상세 내용은 원문 참조", "url": link, "date": date_str})
         except Exception as e:
-            st.warning(f"'{clean_k}' 키워드 검색 중 오류: {e}")
             continue
             
     unique_news = {n['url']: n for n in news_list}.values()
@@ -179,9 +201,9 @@ def create_word_doc(report_text, keywords, title):
     return bio.getvalue()
 
 # --- 5. 메인 UI ---
-st.set_page_config(page_title="Bio-Energy Tracker (Fast)", layout="wide")
-st.title("🔬 바이오 에너지 통합 트래커 (개별 검색)")
-st.caption("각 탭에서 원하는 주제의 검색 버튼을 눌러 개별적으로 리포트를 생성하세요. 속도가 훨씬 빠릅니다!")
+st.set_page_config(page_title="Bio-Energy Tracker", layout="wide")
+st.title("🔬 바이오 에너지 통합 트래커 (네이버 뉴스 탑재)")
+st.caption("각 탭에서 원하는 주제의 검색 버튼을 눌러 개별적으로 리포트를 생성하세요.")
 
 if not configure_gemini():
     st.error("❌ Google API Key 설정 필요")
@@ -201,7 +223,7 @@ with st.sidebar:
     st.divider()
     months = st.slider("검색 기간 (개월)", 1, 24, 6)
 
-tab_paper, tab_domestic, tab_overseas = st.tabs(["🌍 논문 분석 (해외 기술)", "🇰🇷 국내 뉴스 분석", "🌎 해외 뉴스 분석"])
+tab_paper, tab_domestic, tab_overseas = st.tabs(["🌍 논문 분석 (해외 기술)", "🇰🇷 국내 뉴스 분석 (네이버)", "🌎 해외 뉴스 분석"])
 
 with tab_paper:
     st.markdown("### 🌍 해외 바이오 공정 기술 탐색")
@@ -217,7 +239,6 @@ with tab_paper:
                     report_paper = generate_ai_report(papers, k_paper, "Paper")
                     docx_paper = create_word_doc(report_paper, k_paper, "🌍 바이오 논문/기술 분석 리포트")
                     st.download_button("📥 논문 리포트 다운로드", docx_paper, "Paper_Report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="btn_dl_paper")
-                    
                     st.divider()
                     st.markdown(report_paper)
                     with st.expander("📝 수집된 논문 원문 리스트 보기"):
@@ -230,7 +251,7 @@ with tab_domestic:
         k_domestic = [k.strip() for k in domestic_keywords.split('\n') if k.strip()]
         if not k_domestic: st.warning("검색어를 사이드바에 입력해주세요.")
         else:
-            with st.spinner("국내 뉴스를 수집 및 분석 중입니다..."):
+            with st.spinner("네이버에서 국내 뉴스를 수집 및 분석 중입니다..."):
                 d_news = get_domestic_news(k_domestic, months)
                 if not d_news: st.warning("검색된 국내 뉴스가 없습니다. 검색어를 바꿔보세요.")
                 else:
@@ -238,7 +259,6 @@ with tab_domestic:
                     report_domestic = generate_ai_report(d_news, k_domestic, "Domestic_News")
                     docx_domestic = create_word_doc(report_domestic, k_domestic, "🇰🇷 국내 바이오 시장/정책 리포트")
                     st.download_button("📥 국내 뉴스 리포트 다운로드", docx_domestic, "Domestic_News_Report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="btn_dl_domestic")
-                    
                     st.divider()
                     st.markdown(report_domestic)
                     with st.expander("📝 수집된 국내 뉴스 원문 리스트 보기"):
@@ -259,7 +279,6 @@ with tab_overseas:
                     report_overseas = generate_ai_report(o_news, k_overseas, "Overseas_News")
                     docx_overseas = create_word_doc(report_overseas, k_overseas, "🌎 해외 바이오 시장/정책 리포트")
                     st.download_button("📥 해외 뉴스 리포트 다운로드", docx_overseas, "Overseas_News_Report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="btn_dl_overseas")
-                    
                     st.divider()
                     st.markdown(report_overseas)
                     with st.expander("📝 수집된 해외 뉴스 원문 리스트 보기"):
