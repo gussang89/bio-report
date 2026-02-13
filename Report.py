@@ -18,6 +18,7 @@ def configure_gemini():
     return False
 
 # --- 2. 검색 함수들 ---
+
 def get_epmc_papers(keywords, months):
     query_parts = [f'({k.strip()})' for k in keywords if k.strip()]
     if not query_parts: return []
@@ -44,49 +45,68 @@ def get_epmc_papers(keywords, months):
         return filtered
     except: return []
 
+# [핵심 수정] 국내 뉴스 개별 검색 병합 로직
 def get_domestic_news(keywords, months):
-    query_parts = [f'"{k.strip()}"' for k in keywords if k.strip()]
-    if not query_parts: return []
-    search_query = " OR ".join(query_parts)
-    encoded_query = urllib.parse.quote(search_query)
-    url = f"https://news.google.com/rss/search?q={encoded_query}+when:{months}m&hl=ko&gl=KR&ceid=KR:ko"
-    
     news_list = []
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req) as response:
-            root = ET.fromstring(response.read())
-        for item in root.findall('./channel/item'):
-            title = item.find('title').text
-            link = item.find('link').text
-            pubDate = item.find('pubDate').text
-            try: date_str = parsedate_to_datetime(pubDate).strftime("%Y-%m-%d")
-            except: date_str = pubDate
-            news_list.append({"title": title, "abstract": "상세 내용은 원문 링크를 참고하세요.", "url": link, "date": date_str})
-    except: pass
+    # 봇 차단 방지를 위한 구체적인 User-Agent 설정
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    
+    for k in keywords:
+        clean_k = k.strip()
+        if not clean_k: continue
+        
+        # 따옴표 없이 순수 검색어로 요청 (결과가 훨씬 잘 나옴)
+        encoded_query = urllib.parse.quote(clean_k)
+        url = f"https://news.google.com/rss/search?q={encoded_query}+when:{months}m&hl=ko&gl=KR&ceid=KR:ko"
+        
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req) as response:
+                root = ET.fromstring(response.read())
+            
+            for item in root.findall('./channel/item'):
+                title = item.find('title').text
+                link = item.find('link').text
+                pubDate = item.find('pubDate').text
+                try: date_str = parsedate_to_datetime(pubDate).strftime("%Y-%m-%d")
+                except: date_str = pubDate
+                news_list.append({"title": title, "abstract": "상세 내용은 원문 링크를 참고하세요.", "url": link, "date": date_str})
+        except Exception as e:
+            st.warning(f"'{clean_k}' 키워드 검색 중 오류: {e}")
+            continue
+            
+    # URL 기준으로 중복 기사 제거 후 최신순 정렬
     unique_news = {n['url']: n for n in news_list}.values()
     return sorted(unique_news, key=lambda x: x['date'], reverse=True)
 
+# [핵심 수정] 해외 뉴스 개별 검색 병합 로직
 def get_overseas_news(keywords, months):
-    query_parts = [f'"{k.strip()}"' for k in keywords if k.strip()]
-    if not query_parts: return []
-    search_query = " OR ".join(query_parts)
-    encoded_query = urllib.parse.quote(search_query)
-    url = f"https://news.google.com/rss/search?q={encoded_query}+when:{months}m&hl=en-US&gl=US&ceid=US:en"
-    
     news_list = []
-    try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req) as response:
-            root = ET.fromstring(response.read())
-        for item in root.findall('./channel/item'):
-            title = item.find('title').text
-            link = item.find('link').text
-            pubDate = item.find('pubDate').text
-            try: date_str = parsedate_to_datetime(pubDate).strftime("%Y-%m-%d")
-            except: date_str = pubDate
-            news_list.append({"title": title, "abstract": "상세 내용은 원문 링크를 참고하세요.", "url": link, "date": date_str})
-    except: pass
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    
+    for k in keywords:
+        clean_k = k.strip()
+        if not clean_k: continue
+        
+        encoded_query = urllib.parse.quote(clean_k)
+        url = f"https://news.google.com/rss/search?q={encoded_query}+when:{months}m&hl=en-US&gl=US&ceid=US:en"
+        
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req) as response:
+                root = ET.fromstring(response.read())
+            
+            for item in root.findall('./channel/item'):
+                title = item.find('title').text
+                link = item.find('link').text
+                pubDate = item.find('pubDate').text
+                try: date_str = parsedate_to_datetime(pubDate).strftime("%Y-%m-%d")
+                except: date_str = pubDate
+                news_list.append({"title": title, "abstract": "상세 내용은 원문 링크를 참고하세요.", "url": link, "date": date_str})
+        except Exception as e:
+            st.warning(f"'{clean_k}' 키워드 검색 중 오류: {e}")
+            continue
+            
     unique_news = {n['url']: n for n in news_list}.values()
     return sorted(unique_news, key=lambda x: x['date'], reverse=True)
 
@@ -166,7 +186,6 @@ st.caption("각 탭에서 원하는 주제의 검색 버튼을 눌러 개별적�
 if not configure_gemini():
     st.error("❌ Google API Key 설정 필요")
 
-# 사이드바 (검색어와 기간 설정만 남김)
 with st.sidebar:
     st.header("🔍 카테고리별 검색어 설정")
     
@@ -177,22 +196,20 @@ with st.sidebar:
     domestic_keywords = st.text_area("국내 시장/정책 키워드", value="바이오디젤\n지속가능항공유\n에쓰오일 바이오\nHD현대오일뱅크 바이오", height=100)
     
     st.subheader("3. 해외 뉴스 (영어)")
-    overseas_keywords = st.text_area("해외 시장/정책 키워드", value="Sustainable Aviation Fuel mandate\nHVO market\nNeste biofuel", height=100)
+    overseas_keywords = st.text_area("해외 시장/정책 키워드", value="Sustainable Aviation Fuel\nHVO market\nNeste biofuel", height=100)
     
     st.divider()
     months = st.slider("검색 기간 (개월)", 1, 24, 6)
 
-# 3개의 탭 구성
 tab_paper, tab_domestic, tab_overseas = st.tabs(["🌍 논문 분석 (해외 기술)", "🇰🇷 국내 뉴스 분석", "🌎 해외 뉴스 분석"])
 
-# [탭 1] 해외 논문
 with tab_paper:
     st.markdown("### 🌍 해외 바이오 공정 기술 탐색")
     if st.button("해외 논문 검색 및 분석 🚀", key="btn_run_paper"):
         k_paper = [k.strip() for k in paper_keywords.split('\n') if k.strip()]
         if not k_paper: st.warning("검색어를 사이드바에 입력해주세요.")
         else:
-            with st.spinner("해외 논문을 수집 및 분석 중입니다. (약 10~20초 소요)"):
+            with st.spinner("해외 논문을 수집 및 분석 중입니다..."):
                 papers = get_epmc_papers(k_paper, months)
                 if not papers: st.warning("검색된 해외 논문이 없습니다.")
                 else:
@@ -207,16 +224,15 @@ with tab_paper:
                         for i, p in enumerate(papers):
                             st.write(f"**[{i+1}] {p['title']}** ({p['date']})  [링크]({p['url']})")
 
-# [탭 2] 국내 뉴스
 with tab_domestic:
     st.markdown("### 🇰🇷 국내 바이오 시장 및 정책 탐색")
     if st.button("국내 뉴스 검색 및 분석 🚀", key="btn_run_domestic"):
         k_domestic = [k.strip() for k in domestic_keywords.split('\n') if k.strip()]
         if not k_domestic: st.warning("검색어를 사이드바에 입력해주세요.")
         else:
-            with st.spinner("국내 뉴스를 수집 및 분석 중입니다. (약 10~20초 소요)"):
+            with st.spinner("국내 뉴스를 수집 및 분석 중입니다..."):
                 d_news = get_domestic_news(k_domestic, months)
-                if not d_news: st.warning("검색된 국내 뉴스가 없습니다.")
+                if not d_news: st.warning("검색된 국내 뉴스가 없습니다. 검색어를 바꿔보세요.")
                 else:
                     st.success(f"성공! {len(d_news)}건의 뉴스를 바탕으로 리포트를 작성했습니다.")
                     report_domestic = generate_ai_report(d_news, k_domestic, "Domestic_News")
@@ -229,16 +245,15 @@ with tab_domestic:
                         for i, n in enumerate(d_news):
                             st.write(f"**[{i+1}] {n['title']}** ({n['date']})  [링크]({n['url']})")
 
-# [탭 3] 해외 뉴스
 with tab_overseas:
     st.markdown("### 🌎 해외 바이오 시장 및 정책 탐색")
     if st.button("해외 뉴스 검색 및 분석 🚀", key="btn_run_overseas"):
         k_overseas = [k.strip() for k in overseas_keywords.split('\n') if k.strip()]
         if not k_overseas: st.warning("검색어를 사이드바에 입력해주세요.")
         else:
-            with st.spinner("해외 뉴스를 수집 및 분석 중입니다. (약 10~20초 소요)"):
+            with st.spinner("해외 뉴스를 수집 및 분석 중입니다..."):
                 o_news = get_overseas_news(k_overseas, months)
-                if not o_news: st.warning("검색된 해외 뉴스가 없습니다.")
+                if not o_news: st.warning("검색된 해외 뉴스가 없습니다. 검색어를 바꿔보세요.")
                 else:
                     st.success(f"성공! {len(o_news)}건의 뉴스를 바탕으로 리포트를 작성했습니다.")
                     report_overseas = generate_ai_report(o_news, k_overseas, "Overseas_News")
