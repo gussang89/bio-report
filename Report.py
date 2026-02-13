@@ -17,9 +17,7 @@ def configure_gemini():
         return True
     return False
 
-# --- 2. 검색 함수들 (3개로 완벽 분리) ---
-
-# [1] 해외 논문 (Europe PMC)
+# --- 2. 검색 함수들 ---
 def get_epmc_papers(keywords, months):
     query_parts = [f'({k.strip()})' for k in keywords if k.strip()]
     if not query_parts: return []
@@ -46,7 +44,6 @@ def get_epmc_papers(keywords, months):
         return filtered
     except: return []
 
-# [2] 국내 뉴스 (Google News Korea)
 def get_domestic_news(keywords, months):
     query_parts = [f'"{k.strip()}"' for k in keywords if k.strip()]
     if not query_parts: return []
@@ -67,11 +64,9 @@ def get_domestic_news(keywords, months):
             except: date_str = pubDate
             news_list.append({"title": title, "abstract": "상세 내용은 원문 링크를 참고하세요.", "url": link, "date": date_str})
     except: pass
-    
     unique_news = {n['url']: n for n in news_list}.values()
     return sorted(unique_news, key=lambda x: x['date'], reverse=True)
 
-# [3] 해외 뉴스 (Google News US)
 def get_overseas_news(keywords, months):
     query_parts = [f'"{k.strip()}"' for k in keywords if k.strip()]
     if not query_parts: return []
@@ -92,7 +87,6 @@ def get_overseas_news(keywords, months):
             except: date_str = pubDate
             news_list.append({"title": title, "abstract": "상세 내용은 원문 링크를 참고하세요.", "url": link, "date": date_str})
     except: pass
-    
     unique_news = {n['url']: n for n in news_list}.values()
     return sorted(unique_news, key=lambda x: x['date'], reverse=True)
 
@@ -126,7 +120,7 @@ def generate_ai_report(items, keywords, section_type):
     [작성 포인트]
     1. 📊 **핵심 트렌드 요약**: {focus}
     2. 💡 **세부 분석 및 인사이트**: 주요 이슈 및 현업 적용/대응 시사점
-    3. 📌 **주요 원문 3선 리뷰**: 핵심 데이터 번호 기재
+    3. 📌 **주요 원문 리뷰**: 핵심 데이터 번호 기재하여 리뷰
 
     [수집된 데이터]
     {data_text}
@@ -165,75 +159,94 @@ def create_word_doc(report_text, keywords, title):
     return bio.getvalue()
 
 # --- 5. 메인 UI ---
-st.set_page_config(page_title="Bio-Energy Tracker (Pro)", layout="wide")
-st.title("🔬 바이오 에너지 통합 트래커")
-st.caption("논문, 국내 뉴스, 해외 뉴스를 각각 최적화된 키워드로 분리 검색하고, 주석 기반의 정확도 높은 리포트를 개별 생성합니다.")
+st.set_page_config(page_title="Bio-Energy Tracker (Fast)", layout="wide")
+st.title("🔬 바이오 에너지 통합 트래커 (개별 검색)")
+st.caption("각 탭에서 원하는 주제의 검색 버튼을 눌러 개별적으로 리포트를 생성하세요. 속도가 훨씬 빠릅니다!")
 
 if not configure_gemini():
     st.error("❌ Google API Key 설정 필요")
 
+# 사이드바 (검색어와 기간 설정만 남김)
 with st.sidebar:
     st.header("🔍 카테고리별 검색어 설정")
     
-    st.subheader("1. 해외 논문 (영어 권장)")
+    st.subheader("1. 해외 논문 (영어)")
     paper_keywords = st.text_area("공정/기술 키워드", value="Biodiesel production\nTransesterification catalyst", height=100)
     
-    st.subheader("2. 국내 뉴스 (한글 권장)")
+    st.subheader("2. 국내 뉴스 (한글)")
     domestic_keywords = st.text_area("국내 시장/정책 키워드", value="바이오디젤\n지속가능항공유\n에쓰오일 바이오\nHD현대오일뱅크 바이오", height=100)
     
-    st.subheader("3. 해외 뉴스 (영어 권장)")
+    st.subheader("3. 해외 뉴스 (영어)")
     overseas_keywords = st.text_area("해외 시장/정책 키워드", value="Sustainable Aviation Fuel mandate\nHVO market\nNeste biofuel", height=100)
     
     st.divider()
     months = st.slider("검색 기간 (개월)", 1, 24, 6)
-    search_btn = st.button("개별 맞춤 검색 시작 🚀", type="primary")
 
 # 3개의 탭 구성
 tab_paper, tab_domestic, tab_overseas = st.tabs(["🌍 논문 분석 (해외 기술)", "🇰🇷 국내 뉴스 분석", "🌎 해외 뉴스 분석"])
 
-if search_btn:
-    k_paper = [k.strip() for k in paper_keywords.split('\n') if k.strip()]
-    k_domestic = [k.strip() for k in domestic_keywords.split('\n') if k.strip()]
-    k_overseas = [k.strip() for k in overseas_keywords.split('\n') if k.strip()]
-    
-    # [탭 1] 논문
-    with tab_paper:
-        with st.spinner("해외 논문을 수집 및 분석 중입니다..."):
-            papers = get_epmc_papers(k_paper, months)
-            if not papers: st.warning("검색된 해외 논문이 없습니다.")
-            else:
-                report_paper = generate_ai_report(papers, k_paper, "Paper")
-                docx_paper = create_word_doc(report_paper, k_paper, "🌍 바이오 논문/기술 분석 리포트")
-                st.download_button("📥 논문 리포트 다운로드", docx_paper, "Paper_Report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="btn_p")
-                st.markdown(report_paper)
-                with st.expander("📝 수집된 논문 원문 리스트 보기"):
-                    for i, p in enumerate(papers):
-                        st.write(f"**[{i+1}] {p['title']}** ({p['date']})  [링크]({p['url']})")
+# [탭 1] 해외 논문
+with tab_paper:
+    st.markdown("### 🌍 해외 바이오 공정 기술 탐색")
+    if st.button("해외 논문 검색 및 분석 🚀", key="btn_run_paper"):
+        k_paper = [k.strip() for k in paper_keywords.split('\n') if k.strip()]
+        if not k_paper: st.warning("검색어를 사이드바에 입력해주세요.")
+        else:
+            with st.spinner("해외 논문을 수집 및 분석 중입니다. (약 10~20초 소요)"):
+                papers = get_epmc_papers(k_paper, months)
+                if not papers: st.warning("검색된 해외 논문이 없습니다.")
+                else:
+                    st.success(f"성공! {len(papers)}건의 논문을 바탕으로 리포트를 작성했습니다.")
+                    report_paper = generate_ai_report(papers, k_paper, "Paper")
+                    docx_paper = create_word_doc(report_paper, k_paper, "🌍 바이오 논문/기술 분석 리포트")
+                    st.download_button("📥 논문 리포트 다운로드", docx_paper, "Paper_Report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="btn_dl_paper")
+                    
+                    st.divider()
+                    st.markdown(report_paper)
+                    with st.expander("📝 수집된 논문 원문 리스트 보기"):
+                        for i, p in enumerate(papers):
+                            st.write(f"**[{i+1}] {p['title']}** ({p['date']})  [링크]({p['url']})")
 
-    # [탭 2] 국내 뉴스
-    with tab_domestic:
-        with st.spinner("국내 뉴스를 수집 및 분석 중입니다..."):
-            d_news = get_domestic_news(k_domestic, months)
-            if not d_news: st.warning("검색된 국내 뉴스가 없습니다.")
-            else:
-                report_domestic = generate_ai_report(d_news, k_domestic, "Domestic_News")
-                docx_domestic = create_word_doc(report_domestic, k_domestic, "🇰🇷 국내 바이오 시장/정책 리포트")
-                st.download_button("📥 국내 뉴스 리포트 다운로드", docx_domestic, "Domestic_News_Report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="btn_d")
-                st.markdown(report_domestic)
-                with st.expander("📝 수집된 국내 뉴스 원문 리스트 보기"):
-                    for i, n in enumerate(d_news):
-                        st.write(f"**[{i+1}] {n['title']}** ({n['date']})  [링크]({n['url']})")
+# [탭 2] 국내 뉴스
+with tab_domestic:
+    st.markdown("### 🇰🇷 국내 바이오 시장 및 정책 탐색")
+    if st.button("국내 뉴스 검색 및 분석 🚀", key="btn_run_domestic"):
+        k_domestic = [k.strip() for k in domestic_keywords.split('\n') if k.strip()]
+        if not k_domestic: st.warning("검색어를 사이드바에 입력해주세요.")
+        else:
+            with st.spinner("국내 뉴스를 수집 및 분석 중입니다. (약 10~20초 소요)"):
+                d_news = get_domestic_news(k_domestic, months)
+                if not d_news: st.warning("검색된 국내 뉴스가 없습니다.")
+                else:
+                    st.success(f"성공! {len(d_news)}건의 뉴스를 바탕으로 리포트를 작성했습니다.")
+                    report_domestic = generate_ai_report(d_news, k_domestic, "Domestic_News")
+                    docx_domestic = create_word_doc(report_domestic, k_domestic, "🇰🇷 국내 바이오 시장/정책 리포트")
+                    st.download_button("📥 국내 뉴스 리포트 다운로드", docx_domestic, "Domestic_News_Report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="btn_dl_domestic")
+                    
+                    st.divider()
+                    st.markdown(report_domestic)
+                    with st.expander("📝 수집된 국내 뉴스 원문 리스트 보기"):
+                        for i, n in enumerate(d_news):
+                            st.write(f"**[{i+1}] {n['title']}** ({n['date']})  [링크]({n['url']})")
 
-    # [탭 3] 해외 뉴스
-    with tab_overseas:
-        with st.spinner("해외 뉴스를 수집 및 분석 중입니다..."):
-            o_news = get_overseas_news(k_overseas, months)
-            if not o_news: st.warning("검색된 해외 뉴스가 없습니다.")
-            else:
-                report_overseas = generate_ai_report(o_news, k_overseas, "Overseas_News")
-                docx_overseas = create_word_doc(report_overseas, k_overseas, "🌎 해외 바이오 시장/정책 리포트")
-                st.download_button("📥 해외 뉴스 리포트 다운로드", docx_overseas, "Overseas_News_Report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="btn_o")
-                st.markdown(report_overseas)
-                with st.expander("📝 수집된 해외 뉴스 원문 리스트 보기"):
-                    for i, n in enumerate(o_news):
-                        st.write(f"**[{i+1}] {n['title']}** ({n['date']})  [링크]({n['url']})")
+# [탭 3] 해외 뉴스
+with tab_overseas:
+    st.markdown("### 🌎 해외 바이오 시장 및 정책 탐색")
+    if st.button("해외 뉴스 검색 및 분석 🚀", key="btn_run_overseas"):
+        k_overseas = [k.strip() for k in overseas_keywords.split('\n') if k.strip()]
+        if not k_overseas: st.warning("검색어를 사이드바에 입력해주세요.")
+        else:
+            with st.spinner("해외 뉴스를 수집 및 분석 중입니다. (약 10~20초 소요)"):
+                o_news = get_overseas_news(k_overseas, months)
+                if not o_news: st.warning("검색된 해외 뉴스가 없습니다.")
+                else:
+                    st.success(f"성공! {len(o_news)}건의 뉴스를 바탕으로 리포트를 작성했습니다.")
+                    report_overseas = generate_ai_report(o_news, k_overseas, "Overseas_News")
+                    docx_overseas = create_word_doc(report_overseas, k_overseas, "🌎 해외 바이오 시장/정책 리포트")
+                    st.download_button("📥 해외 뉴스 리포트 다운로드", docx_overseas, "Overseas_News_Report.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="btn_dl_overseas")
+                    
+                    st.divider()
+                    st.markdown(report_overseas)
+                    with st.expander("📝 수집된 해외 뉴스 원문 리스트 보기"):
+                        for i, n in enumerate(o_news):
+                            st.write(f"**[{i+1}] {n['title']}** ({n['date']})  [링크]({n['url']})")
